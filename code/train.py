@@ -75,20 +75,43 @@ def get_normalized_train_dir(train_dir):
     os.symlink(os.path.abspath(train_dir), global_train_dir)
     return global_train_dir
 
+def cl(x):
+    return map(int,x.lstrip().rstrip().split())
+
+def load_dataset(name):
+    out = []
+    ma = 0
+    mb = 0
+    mc = 0
+    with open(pjoin(FLAGS.data_dir, name+".ids.context")) as f1, \
+         open(pjoin(FLAGS.data_dir, name+".ids.question")) as f2, \
+         open(pjoin(FLAGS.data_dir, name+".span")) as f3:
+        for (a,b,c) in zip(f1, f2, f3):
+            r = (cl(a),cl(b),cl(c))
+            #ma = max(ma, len(r[0]))
+            #mb = max(mb, len(r[1]))
+            #mc = max(mc, len(r[2]))
+            out.append(r)
+    return out
 
 def main(_):
 
     # Do what you need to load datasets from FLAGS.data_dir
-    dataset = None
+    
+    dataset = load_dataset("train")
 
     embed_path = FLAGS.embed_path or pjoin("data", "squad", "glove.trimmed.{}.npz".format(FLAGS.embedding_size))
     vocab_path = FLAGS.vocab_path or pjoin(FLAGS.data_dir, "vocab.dat")
     vocab, rev_vocab = initialize_vocab(vocab_path)
 
-    encoder = Encoder(size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size)
-    decoder = Decoder(output_size=FLAGS.output_size)
+    q_len = 65
+    p_len = FLAGS.output_size
+    batch_size = FLAGS.batch_size
+    q_encoder = Encoder(q_len, size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, batch_size=batch_size)
+    p_encoder = Encoder(p_len, size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, batch_size=batch_size)
+    decoder = Decoder(FLAGS.output_size, FLAGS.state_size, q_len)
 
-    qa = QASystem(encoder, decoder)
+    qa = QASystem(q_encoder, p_encoder, decoder, embed_path, q_len, p_len, batch_size)
 
     if not os.path.exists(FLAGS.log_dir):
         os.makedirs(FLAGS.log_dir)
