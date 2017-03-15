@@ -10,6 +10,9 @@ import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
+from tensorflow.python.ops.nn import bidirectional_dynamic_rnn
+#import tf.nn.rnn_cell
+
 #from tensorflow.nn import sparse_softmax_cross_entropy_with_logits as ssce 
 
 ssce = tf.nn.sparse_softmax_cross_entropy_with_logits
@@ -128,8 +131,8 @@ class QASystem(object):
         self.paragraph_placeholder = tf.placeholder(tf.int32, shape=(None, paragraph_length))
         self.label_placeholder = tf.placeholder(tf.int32, shape=(None, 2))
 
-        self.qlen_placeholder = tf.placeholder(tf.bool, shape=(None))
-        self.plen_placeholder = tf.placeholder(tf.bool, shape=(None))
+        self.qlen_placeholder = tf.placeholder(tf.int32, shape=(None))
+        self.plen_placeholder = tf.placeholder(tf.int32, shape=(None))
 
 
         # ==== assemble pieces ====
@@ -149,14 +152,42 @@ class QASystem(object):
         to assemble your reading comprehension system!
         :return:
         """
+
+        # WORD EMBEDDINGS
         # (minibatch size, question length, embedding size)
         q = tf.nn.embedding_lookup(self.embeddings, self.question_placeholder)
-        par = tf.nn.embedding_lookup(self.embeddings, self.paragraph_placeholder)
+        p = tf.nn.embedding_lookup(self.embeddings, self.paragraph_placeholder)
 
         # FILTER LAYER w00t
-        q_mags = tf.math.norm(q, axis=1)
-        print("q_mags shape",q_mags.get_shape())
+        def l2_norm(tensor, indices=None):
+            return tf.reduce_sum(tf.sqrt(tensor), reduction_indices=indices, keep_dims=True)
 
+        q_mags = l2_norm(q, [2])
+        p_mags = l2_norm(p, [2])
+        q_normalized = tf.truediv(q,q_mags)
+        p_normalized = tf.truediv(p,p_mags)
+
+        r = tf.einsum('aik,ajk->aij', q_normalized, p_normalized)
+        rmax = tf.reduce_max(r, reduction_indices=[1])
+
+        #p = tf.mul(p, rmax)
+        p = tf.einsum('aij,ai->aij', p, rmax)
+
+        # CONTEXT REPRESENTATION LAYER uhhh
+        cell = tf.nn.rnn_cell.BasicLSTMCell(self.config.state_size)
+
+        # (minibatch size, max question length, hidden state size)
+        (fwQ, bwQ), _ = bidirectional_dynamic_rnn(cell, cell, q,
+                            self.qlen_placeholder, dtype=np.float32)
+
+        (fwP, bwP), _ = bidirectional_dynamic_rnn(cell, cell, p,
+                            self.plen_placeholder, dtype=np.float32)
+
+        # MULTI PERSPECTIVE CONTEXT MATCHING LAYER
+
+
+        print("fwQ is shaped",fwQ.get_shape())
+        print("bwQ is shaped",bwQ.get_shape())
         with vs.variable_scope("q"):
             q_enc = self.q_encoder.encode(q, self.qlen_placeholder, None)
         with vs.variable_scope("p"):
