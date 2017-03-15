@@ -80,6 +80,8 @@ def cl(x):
     return map(int,x.lstrip().rstrip().split())
 
 def load_dataset(name):
+    # Returns a list of ([paragraph], [question], [answer]) where each
+    # [paragraph] is a list of words indexed by number in the dictionary
     out = []
     ma = 0
     mb = 0
@@ -89,10 +91,11 @@ def load_dataset(name):
          open(pjoin(FLAGS.data_dir, name+".span")) as f3:
         for (a,b,c) in zip(f1, f2, f3):
             r = (cl(a),cl(b),cl(c))
-            #ma = max(ma, len(r[0]))
-            #mb = max(mb, len(r[1]))
-            #mc = max(mc, len(r[2]))
+            ma = max(ma, len(r[0]))
+            mb = max(mb, len(r[1]))
+            mc = max(mc, len(r[2]))
             out.append(r)
+    print(ma, mb, mc)
     return out
 
 def main(_):
@@ -106,14 +109,15 @@ def main(_):
     vocab_path = FLAGS.vocab_path or pjoin(FLAGS.data_dir, "vocab.dat")
     vocab, rev_vocab = initialize_vocab(vocab_path)
 
+    # roughly based on the training data
     q_len = 65
-    p_len = FLAGS.output_size
+    p_len = 800
     batch_size = FLAGS.batch_size
     q_encoder = Encoder(q_len, size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, batch_size=batch_size)
     p_encoder = Encoder(p_len, size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, batch_size=batch_size)
     decoder = Decoder(FLAGS.output_size, FLAGS.state_size, q_len)
 
-    qa = QASystem(q_encoder, p_encoder, decoder, embed_path, q_len, p_len, batch_size, flags=FLAGS)
+    qa = QASystem(q_encoder, p_encoder, decoder, embed_path, question_length=q_len, paragraph_length=p_len, flags=FLAGS)
 
     if not os.path.exists(FLAGS.log_dir):
         os.makedirs(FLAGS.log_dir)

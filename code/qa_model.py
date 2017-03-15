@@ -32,7 +32,7 @@ def get_optimizer(opt):
     return optfn
 
 class FilterLayer(object): 
-    def __init__(self, size, vocab_dim):
+    def __init__(self, ):
         self.size = size
         self.vocab_dim = vocab_dim
 
@@ -107,7 +107,7 @@ class Decoder(object):
         return
 
 class QASystem(object):
-    def __init__(self, q_encoder, p_encoder, decoder, embed_path, question_length, paragraph_length, batch_size, flags, *args):
+    def __init__(self, q_encoder, p_encoder, decoder, embed_path, question_length, paragraph_length, flags, *args):
         """
         Initializes your System
 
@@ -121,17 +121,16 @@ class QASystem(object):
         self.p_encoder = p_encoder
         self.question_length = question_length
         self.paragraph_length = paragraph_length
-        self.batch_size = batch_size
         self.config = flags
 
         # ==== set up placeholder tokens ========
         self.question_placeholder = tf.placeholder(tf.int32, shape=(None, question_length))
-        self.qlen_placeholder = tf.placeholder(tf.bool, shape=(None))
-        self.qmask_placeholder = tf.placeholder(tf.bool, shape=(None, question_length))
         self.paragraph_placeholder = tf.placeholder(tf.int32, shape=(None, paragraph_length))
-        self.plen_placeholder = tf.placeholder(tf.bool, shape=(None))
-        self.pmask_placeholder = tf.placeholder(tf.bool, shape=(None, paragraph_length))
         self.label_placeholder = tf.placeholder(tf.int32, shape=(None, 2))
+
+        self.qlen_placeholder = tf.placeholder(tf.bool, shape=(None))
+        self.plen_placeholder = tf.placeholder(tf.bool, shape=(None))
+
 
         # ==== assemble pieces ====
         with tf.variable_scope("qa", initializer=tf.uniform_unit_scaling_initializer(1.0)):
@@ -150,8 +149,13 @@ class QASystem(object):
         to assemble your reading comprehension system!
         :return:
         """
+        # (minibatch size, question length, embedding size)
         q = tf.nn.embedding_lookup(self.embeddings, self.question_placeholder)
         par = tf.nn.embedding_lookup(self.embeddings, self.paragraph_placeholder)
+
+        # FILTER LAYER w00t
+        q_mags = tf.math.norm(q, axis=1)
+        print("q_mags shape",q_mags.get_shape())
 
         with vs.variable_scope("q"):
             q_enc = self.q_encoder.encode(q, self.qlen_placeholder, None)
@@ -168,9 +172,9 @@ class QASystem(object):
         :return:
         """
         with vs.variable_scope("loss"):
-            l1 = ssce(self.a_s, self.start_answer)
-            l2 = ssce(self.a_e, self.end_answer)
-            self.loss = l1 + l2 
+            #l1 = ssce(self.a_s, self.start_answer)
+            #l2 = ssce(self.a_e, self.end_answer)
+            self.loss = tf.constant(42)#l1 + l2 
 
 
     def setup_embeddings(self):
@@ -180,10 +184,10 @@ class QASystem(object):
         """
         with vs.variable_scope("embeddings"):
             pretrained_embeddings = np.load(self.embed_path)['glove'].astype(np.float32)
-            # TODO varible
+            # TODO variable
             self.embeddings = tf.constant(pretrained_embeddings)
 
-    def make_feed_dict(self, datapoints):
+    def make_feed_dict(self, paragraphs, questions, labels):
         # Given a batch
         dic = {}
         def fill(L):
@@ -194,68 +198,15 @@ class QASystem(object):
                 return x
             return _fill
 
-        questions = [datapoint[1] for datapoint in datapoints]
-        dic[self.qlen_placeholder] = map(len, questions)
-        dic[self.question_placeholder] = map(fill(self.question_length), questions)
-        paragraphs = [datapoint[0] for datapoint in datapoints]
-        dic[self.plen_placeholder] = map(len, paragraphs)
-        dic[self.paragraph_placeholder] = map(fill(self.paragraph_length), paragraphs)
+        dic[self.question_placeholder] = np.array(map(fill(self.question_length), questions))
+        dic[self.paragraph_placeholder] = np.array(map(fill(self.paragraph_length), paragraphs))
+
+        dic[self.plen_placeholder] = np.array(map(len, paragraphs))
+        dic[self.qlen_placeholder] = np.array(map(len, questions))
+
+        dic[self.label_placeholder] = labels
+
         return dic
-
-
-    def optimize(self, session, batch):#train_x, train_y):
-        """
-        Takes in actual data to optimize your model
-        This method is equivalent to a step() function
-        :return:
-        """
-        #input_feed = {}
-
-        # fill in this feed_dictionary like:
-        #input_feed['train_x'] = train_x
-        input_feed = self.make_feed_dict(batch)
-
-        output_feed = [self.answer]
-
-        outputs = session.run(output_feed, input_feed)
-        print("outputs!")
-        print(outputs)
-
-        return outputs
-
-    def test(self, session, valid_x, valid_y):
-        """
-        in here you should compute a cost for your validation set
-        and tune your hyperparameters according to the validation set performance
-        :return:
-        """
-        input_feed = {}
-
-        # fill in this feed_dictionary like:
-        # input_feed['valid_x'] = valid_x
-
-        output_feed = []
-
-        outputs = session.run(output_feed, input_feed)
-
-        return outputs
-
-    def decode(self, session, test_x):
-        """
-        Returns the probability distribution over different positions in the paragraph
-        so that other methods like self.answer() will be able to work properly
-        :return:
-        """
-        input_feed = {}
-
-        # fill in this feed_dictionary like:
-        # input_feed['test_x'] = test_x
-
-        output_feed = []
-
-        outputs = session.run(output_feed, input_feed)
-
-        return outputs
 
     def answer(self, session, test_x):
 
@@ -265,26 +216,6 @@ class QASystem(object):
         a_e = np.argmax(yp2, axis=1)
 
         return (a_s, a_e)
-
-    def validate(self, sess, valid_dataset):
-        """
-        Iterate through the validation dataset and determine what
-        the validation cost is.
-
-        This method calls self.test() which explicitly calculates validation cost.
-
-        How you implement this function is dependent on how you design
-        your data iteration function
-
-        :return:
-        """
-        valid_cost = 0
-
-        for valid_x, valid_y in valid_dataset:
-          valid_cost = self.test(sess, valid_x, valid_y)
-
-
-        return valid_cost
 
     def evaluate_answer(self, session, dataset, sample=100, log=False):
         """
@@ -314,9 +245,9 @@ class QASystem(object):
 
     def train_on_batch(self, session, batch):
         #print("Training on batch", batch)
-        #_, loss = session.run([self.loss], feed_dict=feed)
-        #return loss
-        return 42
+        feed = self.make_feed_dict(*batch)
+        _, loss = session.run([self.loss], feed_dict=feed)
+        return loss
 
     def run_epoch(self, session, dataset, val_dataset):
         prog = Progbar(target=1 + int(len(dataset) / self.config.batch_size))
