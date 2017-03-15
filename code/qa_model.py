@@ -9,8 +9,11 @@ import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
+from tensorflow.python.ops import sparse_softmax_cross_entropy_with_logits as ssce 
 
 from evaluate import exact_match_score, f1_score
+
+from tensorflow.python.ops.nn import bidirectional_dynamic_rnn 
 
 logging.basicConfig(level=logging.INFO)
 
@@ -24,6 +27,10 @@ def get_optimizer(opt):
         assert (False)
     return optfn
 
+class FilterLayer(object): 
+    def __init__(self, size, vocab_dim):
+        self.size = size
+        self.vocab_dim = vocab_dim
 
 class Encoder(object):
     def __init__(self, size, vocab_dim):
@@ -103,11 +110,14 @@ class QASystem(object):
 
     def setup_loss(self):
         """
-        Set up your loss computation here
+        Set up your loss computa tion here
         :return:
         """
         with vs.variable_scope("loss"):
-            pass
+            l1 = ssce(self.a_s, self.start_answer)
+            l2 = ssce(self.a_e, self.end_answer)
+            self.loss = l1 + l2 
+
 
     def setup_embeddings(self):
         """
@@ -213,8 +223,10 @@ class QASystem(object):
         :return:
         """
 
-        f1 = 0.
-        em = 0.
+        answer = p[a_s, a_e + 1]
+        true_answer = p[true_s, true_e + 1]
+        f1 = f1_score(answer, true_answer)
+        em = exact_match_score(answer, true_answer)
 
         if log:
             logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
