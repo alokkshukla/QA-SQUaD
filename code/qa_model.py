@@ -12,6 +12,7 @@ import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
 
 from evaluate import exact_match_score, f1_score
+from util import Progbar, minibatches
 
 logging.basicConfig(level=logging.INFO)
 
@@ -97,7 +98,7 @@ class Decoder(object):
         return
 
 class QASystem(object):
-    def __init__(self, q_encoder, p_encoder, decoder, embed_path, question_length, paragraph_length, batch_size, *args):
+    def __init__(self, q_encoder, p_encoder, decoder, embed_path, question_length, paragraph_length, batch_size, flags, *args):
         """
         Initializes your System
 
@@ -112,6 +113,7 @@ class QASystem(object):
         self.question_length = question_length
         self.paragraph_length = paragraph_length
         self.batch_size = batch_size
+        self.config = flags
 
         # ==== set up placeholder tokens ========
         self.question_placeholder = tf.placeholder(tf.int32, shape=(None, question_length))
@@ -296,7 +298,23 @@ class QASystem(object):
 
         return f1, em
 
-    def train(self, session, dataset, train_dir):
+    def train_on_batch(self, session, batch):
+        #print("Training on batch", batch)
+        #_, loss = session.run([self.loss], feed_dict=feed)
+        #return loss
+        return 42
+
+    def run_epoch(self, session, dataset, val_dataset):
+        prog = Progbar(target=1 + int(len(dataset) / self.config.batch_size))
+        for i, batch in enumerate(minibatches(dataset, self.config.batch_size)):
+            loss = self.train_on_batch(session, batch)
+            prog.update(i+1, [("train loss", loss)])
+        print("")
+
+        f1, em = self.evaluate_answer(session, val_dataset)
+        return f1 # return validation f1
+
+    def train(self, session, dataset, val_dataset, train_dir):
         """
         Implement main training loop
 
@@ -319,11 +337,11 @@ class QASystem(object):
         :param train_dir: path to the directory where you should save the model checkpoint
         :return:
         """
-        for epoch in range(10):
+        """for epoch in range(10):
             print("Epoch", epoch)
             for i in range(20):
                 ind = list(np.random.choice(len(dataset), self.batch_size, replace=False))
-                self.optimize(session, map(lambda x: dataset[x], ind))
+                self.optimize(session, map(lambda x: dataset[x], ind))"""
 
         # some free code to print out number of parameters in your model
         # it's always good to check!
@@ -336,3 +354,15 @@ class QASystem(object):
         num_params = sum(map(lambda t: np.prod(tf.shape(t.value()).eval()), params))
         toc = time.time()
         logging.info("Number of params: %d (retreival took %f secs)" % (num_params, toc - tic))
+        logging.info("Starting training. Nominally %d epochs." % self.config.epochs)
+        best_score = -1.0
+        for epoch in range(self.config.epochs):
+            logging.info("Doing epoch %d", epoch + 1)
+            score = self.run_epoch(session, dataset, val_dataset)
+            if score > best_score:
+                fn = pjoin(train_dir,"model.weights")
+                logging.info("New best score! Saving model in %s.something" % fn)
+                self.saver.save(session, fn)
+                best_score = score
+            print("")
+
