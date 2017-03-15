@@ -1,4 +1,4 @@
-from __future__ import absolute_import
+#from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
@@ -10,7 +10,9 @@ import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
-from tensorflow.python.ops import sparse_softmax_cross_entropy_with_logits as ssce 
+#from tensorflow.nn import sparse_softmax_cross_entropy_with_logits as ssce 
+
+ssce = tf.nn.sparse_softmax_cross_entropy_with_logits
 
 from evaluate import exact_match_score, f1_score
 from util import Progbar, minibatches
