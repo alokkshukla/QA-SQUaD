@@ -4,7 +4,6 @@ from __future__ import print_function
 
 import time
 import logging
-from os.path import join as pjoin
 
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
@@ -27,13 +26,11 @@ def get_optimizer(opt):
 
 
 class Encoder(object):
-    def __init__(self, max_length, size, vocab_dim, batch_size):
-        self.max_length = max_length
+    def __init__(self, size, vocab_dim):
         self.size = size
         self.vocab_dim = vocab_dim
-        self.batch_size = batch_size
 
-    def encode(self, inputs, lengths, encoder_state_input):
+    def encode(self, inputs, masks, encoder_state_input):
         """
         In a generalized encode function, you pass in your inputs,
         masks, and an initial
@@ -48,22 +45,13 @@ class Encoder(object):
                  It can be context-level representation, word-level representation,
                  or both.
         """
-        lstm = tf.nn.rnn_cell.BasicLSTMCell(self.size)
-        outputs, last_states = tf.nn.dynamic_rnn(lstm, sequence_length=lengths, inputs=inputs, dtype=np.float32)
-        print("SHAPE", outputs.get_shape())
-        """state = tf.zeros([self.batch_size, self.size])
-        print(tf.shape(state))
-	for word in range(self.max_length):
-	    output, state = lstm(inputs[:, word], state)
-            print(tf.shape(output), tf.shape(state))"""
 
-        return outputs
+        return
 
 
 class Decoder(object):
-    def __init__(self, output_size, hidden_size, q_len):
+    def __init__(self, output_size):
         self.output_size = output_size
-        self.q_len = q_len
 
     def decode(self, knowledge_rep):
         """
@@ -77,27 +65,11 @@ class Decoder(object):
                               decided by how you choose to implement the encoder
         :return:
         """
-        Hq, Hp = knowledge_rep
-        m = tf.matmul
-        # hip = h_i^p
-        # hap = h_{i-1}^r
-        eQ = tf.ones(self.q_len)
-        l = self.hidden_size
-        init = tf.contrib.layers.xavier_initializer()
-        Wq = tf.get_variable("Wq", (l, l), initializer=init)
-        Wp = tf.get_variable("Wp", (l, l), initializer=init)
-        Wr = tf.get_variable("Wr", (l, l), initializer=init)
-        b = tf.get_variable("b", ())
-        bp = tf.get_variable("bp", (l), initializer=init)
-        w = tf.get_variable("w", (1,l), initializer=init)
-        for i in range(self.q_len):
-            Gi = tf.tanh(m(Wq, Hq)+tf.outer(m(Wp, hip)+m(Wr,hap)+bp, eQ))
-            alphai = tf.softmax(m(w, Gi)+tf.outer(b, eQ))
 
         return
 
 class QASystem(object):
-    def __init__(self, q_encoder, p_encoder, decoder, embed_path, question_length, paragraph_length, batch_size, *args):
+    def __init__(self, encoder, decoder, *args):
         """
         Initializes your System
 
@@ -106,21 +78,8 @@ class QASystem(object):
         :param args: pass in more arguments as needed
         """
 
-        self.embed_path = embed_path
-        self.q_encoder = q_encoder
-        self.p_encoder = p_encoder
-        self.question_length = question_length
-        self.paragraph_length = paragraph_length
-        self.batch_size = batch_size
-
         # ==== set up placeholder tokens ========
-        self.question_placeholder = tf.placeholder(tf.int32, shape=(None, question_length))
-        self.qlen_placeholder = tf.placeholder(tf.bool, shape=(None))
-        self.qmask_placeholder = tf.placeholder(tf.bool, shape=(None, question_length))
-        self.paragraph_placeholder = tf.placeholder(tf.int32, shape=(None, paragraph_length))
-        self.plen_placeholder = tf.placeholder(tf.bool, shape=(None))
-        self.pmask_placeholder = tf.placeholder(tf.bool, shape=(None, paragraph_length))
-        self.label_placeholder = tf.placeholder(tf.int32, shape=(None, 2))
+
 
         # ==== assemble pieces ====
         with tf.variable_scope("qa", initializer=tf.uniform_unit_scaling_initializer(1.0)):
@@ -139,16 +98,7 @@ class QASystem(object):
         to assemble your reading comprehension system!
         :return:
         """
-        q = tf.nn.embedding_lookup(self.embeddings, self.question_placeholder)
-        par = tf.nn.embedding_lookup(self.embeddings, self.paragraph_placeholder)
-
-        with vs.variable_scope("q"):
-            q_enc = self.q_encoder.encode(q, self.qlen_placeholder, None)
-        with vs.variable_scope("p"):
-            p_enc = self.p_encoder.encode(par, self.plen_placeholder, None)
-
-        self.answer = q_enc
-        #dec = self.decoder.decode((q_enc, p_enc))
+        raise NotImplementedError("Connect all parts of your system here!")
 
 
     def setup_loss(self):
@@ -165,47 +115,22 @@ class QASystem(object):
         :return:
         """
         with vs.variable_scope("embeddings"):
-            pretrained_embeddings = np.load(self.embed_path)['glove'].astype(np.float32)
-            # TODO varible
-            self.embeddings = tf.constant(pretrained_embeddings)
+            pass
 
-    def make_feed_dict(self, datapoints):
-        # Given a batch
-        dic = {}
-        def fill(L):
-            def _fill(x):
-                x = x[:L]
-                for i in range(L-len(x)):
-                    x.append(0)
-                return x
-            return _fill
-
-        questions = [datapoint[1] for datapoint in datapoints]
-        dic[self.qlen_placeholder] = map(len, questions)
-        dic[self.question_placeholder] = map(fill(self.question_length), questions)
-        paragraphs = [datapoint[0] for datapoint in datapoints]
-        dic[self.plen_placeholder] = map(len, paragraphs)
-        dic[self.paragraph_placeholder] = map(fill(self.paragraph_length), paragraphs)
-        return dic
-
-
-    def optimize(self, session, batch):#train_x, train_y):
+    def optimize(self, session, train_x, train_y):
         """
         Takes in actual data to optimize your model
         This method is equivalent to a step() function
         :return:
         """
-        #input_feed = {}
+        input_feed = {}
 
         # fill in this feed_dictionary like:
-        #input_feed['train_x'] = train_x
-        input_feed = self.make_feed_dict(batch)
+        # input_feed['train_x'] = train_x
 
-        output_feed = [self.answer]
+        output_feed = []
 
         outputs = session.run(output_feed, input_feed)
-        print("outputs!")
-        print(outputs)
 
         return outputs
 
@@ -319,11 +244,6 @@ class QASystem(object):
         :param train_dir: path to the directory where you should save the model checkpoint
         :return:
         """
-        for epoch in range(10):
-            print("Epoch", epoch)
-            for i in range(20):
-                ind = list(np.random.choice(len(dataset), self.batch_size, replace=False))
-                self.optimize(session, map(lambda x: dataset[x], ind))
 
         # some free code to print out number of parameters in your model
         # it's always good to check!
