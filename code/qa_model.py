@@ -160,7 +160,7 @@ class QASystem(object):
 
         # FILTER LAYER w00t
         def l2_norm(tensor, indices=None):
-            return tf.reduce_sum(tf.sqrt(tensor), reduction_indices=indices, keep_dims=True)
+            return tf.sqrt(tf.reduce_sum(tf.square(tensor), reduction_indices=indices, keep_dims=True))
 
         q_mags = l2_norm(q, [2])
         p_mags = l2_norm(p, [2])
@@ -174,32 +174,104 @@ class QASystem(object):
         p = tf.einsum('aij,ai->aij', p, rmax)
 
         # CONTEXT REPRESENTATION LAYER uhhh
-        cell = tf.nn.rnn_cell.BasicLSTMCell(self.config.state_size)
 
-        # (minibatch size, max question length, hidden state size)
-        (fwQ, bwQ), _ = bidirectional_dynamic_rnn(cell, cell, q,
-                            self.qlen_placeholder, dtype=np.float32)
+        with tf.variable_scope("context"):
+            # Note. We're using the same cell. Maybe not?
+            cell = tf.nn.rnn_cell.BasicLSTMCell(self.config.state_size)
 
-        (fwP, bwP), _ = bidirectional_dynamic_rnn(cell, cell, p,
-                            self.plen_placeholder, dtype=np.float32)
+            # (minibatch size, max question length, hidden state size)
+            with tf.variable_scope("bilstm1"):
+                (fwQ, bwQ), _ = bidirectional_dynamic_rnn(cell, cell, q,
+                                self.qlen_placeholder, dtype=np.float32)
+
+            with tf.variable_scope("bilstm2"):
+                (fwP, bwP), _ = bidirectional_dynamic_rnn(cell, cell, p,
+                                self.plen_placeholder, dtype=np.float32)
 
         # MULTI PERSPECTIVE CONTEXT MATCHING LAYER
+        xavier = tf.contrib.layers.xavier_initializer()
+
+        # Let's do naive cosine instead
+        fwQnorm = tf.truediv(fwQ, l2_norm(fwQ, [2]))
+        bwQnorm = tf.truediv(bwQ, l2_norm(bwQ, [2]))
+
+        fwPnorm = tf.truediv(fwP, l2_norm(fwP, [2]))
+        bwPnorm = tf.truediv(bwP, l2_norm(bwP, [2]))
+
+        # (batch size, question length, paragraph length)
+        fwSim = tf.einsum('aij,akj->aik', fwQnorm, fwPnorm)
+        bwSim = tf.einsum('aij,akj->aik', bwQnorm, bwPnorm)
 
 
-        print("fwQ is shaped",fwQ.get_shape())
-        print("bwQ is shaped",bwQ.get_shape())
-        with vs.variable_scope("q"):
-            q_enc = self.q_encoder.encode(q, self.qlen_placeholder, None)
-        with vs.variable_scope("p"):
-            p_enc = self.p_encoder.encode(par, self.plen_placeholder, None)
+        # Okay so here's a fun bug!
+        # fwSim and bwSim include a bunch of NaNs because each seq. has
+        # a different elngth. We need to perform those three operations
+        # (first/last, max, mean) only up to [:qlen], [:plen], in a way.
+        # This seems to be the idea behind pooling but tf is being weird
 
-        self.answer = q_enc
-        #dec = self.decoder.decode((q_enc, p_enc))
+        # Matching full similarity
+        FULLfw = fwSim[:,self.question_length - 1, :]
+        FULLbw = bwSim[:,0, :]
+        self.thing = tf.gather_nd(fwSim, [-1,self.qlen_placeholder,-1])
+        #fwSim[0, self.qlen_placeholder[0]-1, self.plen_placeholder[0]-1]
+        #fwSim[:, tf.expand_dims(self.qlen_placeholder,1)-1, :]
 
+
+        MAXfw = tf.reduce_max(fwSim, reduction_indices=[1])
+        MAXbw = tf.reduce_max(bwSim, reduction_indices=[1])
+
+        MEANfw = tf.reduce_mean(fwSim, reduction_indices=[1])
+        MEANbw = tf.reduce_mean(bwSim, reduction_indices=[1])
+
+        # (batch size, passage length, 6)
+        ms = tf.pack([FULLfw, FULLbw, MAXfw, MAXbw, MEANfw, MEANbw], axis=2)
+
+        # AGGREGATION LAYER
+        with tf.variable_scope("aggregation"):
+            # (batch size, passage length, aggregation hidden size)
+            cell = tf.nn.rnn_cell.BasicLSTMCell(self.config.aggregation_size)
+            (fwA, bwA), _ = bidirectional_dynamic_rnn(cell, cell, ms,
+                            self.plen_placeholder, dtype=np.float32)
+            print("fwA shape",fwA.get_shape())
+
+        return
+        """
+        # 1. Full matching perspective
+        # - SLOW AF -
+        def get_m(v1, v2, name):
+            ms = []
+            with tf.variable_scope(name):
+                try:
+                    W = tf.get_variable("W", shape=(self.config.perspectives,
+                                                self.config.state_size),
+                                    initializer=xavier)
+                except ValueError:
+                    tf.get_variable_scope().reuse_variables()
+                    W = tf.get_variable("W")
+
+                tr = tf.einsum('ij,aj->iaj', W, v1)
+                for k in range(self.config.perspectives):
+                    v1k = tf.einsum('ai,i->ai', v1, W[k,:])
+                    v1k = tf.truediv(v1k, l2_norm(v1k, [1]))
+
+                    v2k = tf.einsum('ai,i->ai', v2, W[k,:])
+                    v2k = tf.truediv(v2k, l2_norm(v2k, [1]))
+
+                    ms.append(tf.reduce_sum(tf.mul(v1k, v2k),axis=1))
+            return tf.pack(ms, 1)
+        fullMatchingFw = []
+        fullMatchingBw = []
+        for j in range(self.paragraph_length):
+            print(j)
+            fullMatchingFw.append(get_m(fwP[:,j,:], fwQ[:,self.question_length-1,:],"fmfw"))
+            fullMatchingBw.append(get_m(bwP[:,j,:], fwQ[:,0,:],"fmbw"))
+        fullMatchingFw = tf.pack(fullMatchingFw, 1)
+        fullMatchingBw = tf.pack(fullMatchingBw, 1)
+        print("hmmm", fullMatchingFw.get_shape())"""
 
     def setup_loss(self):
         """
-        Set up your loss computa tion here
+        Set up your loss computation here
         :return:
         """
         with vs.variable_scope("loss"):
@@ -277,7 +349,9 @@ class QASystem(object):
     def train_on_batch(self, session, batch):
         #print("Training on batch", batch)
         feed = self.make_feed_dict(*batch)
-        _, loss = session.run([self.loss], feed_dict=feed)
+        output = session.run([self.thing], feed_dict=feed)
+        print("output is",output)
+        exit()
         return loss
 
     def run_epoch(self, session, dataset, val_dataset):
@@ -341,4 +415,3 @@ class QASystem(object):
                 self.saver.save(session, fn)
                 best_score = score
             print("")
-
