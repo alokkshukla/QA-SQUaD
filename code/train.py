@@ -14,7 +14,7 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-tf.app.flags.DEFINE_float("learning_rate", 0.01, "Learning rate.")
+tf.app.flags.DEFINE_float("learning_rate", 0., "Learning rate.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 10.0, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_float("dropout", 0.2, "Fraction of units randomly dropped on non-recurrent connections.")
 tf.app.flags.DEFINE_integer("batch_size", 10, "Batch size to use during training.")
@@ -24,7 +24,7 @@ tf.app.flags.DEFINE_integer("output_size", 750, "The output size of your model."
 tf.app.flags.DEFINE_integer("embedding_size", 100, "Size of the pretrained vocabulary.")
 tf.app.flags.DEFINE_integer("evaluate", 1000, "Number of samples to evaluate with.")
 tf.app.flags.DEFINE_integer("perspectives", 50, "Number of perspectives.")
-tf.app.flags.DEFINE_integer("aggregation_size", 90, "Number of states in the second LSTM.")
+tf.app.flags.DEFINE_integer("aggregation_size", 60, "Number of states in the second LSTM.")
 tf.app.flags.DEFINE_string("data_dir", "data/squad", "SQuAD directory (default ./data/squad)")
 tf.app.flags.DEFINE_string("train_dir", "train", "Training directory to save the model parameters (default: ./train).")
 tf.app.flags.DEFINE_string("load_train_dir", "", "Training directory to load model parameters from to resume training (default: {train_dir}).")
@@ -115,11 +115,11 @@ def main(_):
     q_len = 65
     p_len = 800
     batch_size = FLAGS.batch_size
-    q_encoder = Encoder(q_len, size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, batch_size=batch_size)
-    p_encoder = Encoder(p_len, size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, batch_size=batch_size)
-    decoder = Decoder(FLAGS.output_size, FLAGS.state_size, q_len)
+    #q_encoder = Encoder(q_len, size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, batch_size=batch_size)
+    #p_encoder = Encoder(p_len, size=FLAGS.state_size, vocab_dim=FLAGS.embedding_size, batch_size=batch_size)
+    #decoder = Decoder(FLAGS.output_size, FLAGS.state_size, q_len)
 
-    qa = QASystem(q_encoder, p_encoder, decoder, embed_path, question_length=q_len, paragraph_length=p_len, flags=FLAGS)
+    qa = QASystem(embed_path, question_length=q_len, paragraph_length=p_len, flags=FLAGS)
 
     if not os.path.exists(FLAGS.log_dir):
         os.makedirs(FLAGS.log_dir)
