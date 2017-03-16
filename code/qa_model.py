@@ -129,10 +129,13 @@ class QASystem(object):
         # ==== set up placeholder tokens ========
         self.question_placeholder = tf.placeholder(tf.int32, shape=(None, question_length))
         self.paragraph_placeholder = tf.placeholder(tf.int32, shape=(None, paragraph_length))
-        self.label_placeholder = tf.placeholder(tf.int32, shape=(None, 2))
+        self.starts_placeholder = tf.placeholder(tf.int32, shape=(None))
+        self.ends_placeholder = tf.placeholder(tf.int32, shape=(None))
 
         self.qlen_placeholder = tf.placeholder(tf.int32, shape=(None))
         self.plen_placeholder = tf.placeholder(tf.int32, shape=(None))
+
+        self.dropout_prob = tf.placeholder(tf.float32, shape=())
 
 
         # ==== assemble pieces ====
@@ -178,6 +181,7 @@ class QASystem(object):
         with tf.variable_scope("context"):
             # Note. We're using the same cell. Maybe not?
             cell = tf.nn.rnn_cell.BasicLSTMCell(self.config.state_size)
+            cell = tf.nn.rnn_cell.DropoutWrapper(cell,input_keep_prob=self.dropout_prob,output_keep_prob=self.dropout_prob)
 
             # (minibatch size, max question length, hidden state size)
             with tf.variable_scope("bilstm1"):
@@ -247,18 +251,37 @@ class QASystem(object):
 
         # (batch size, passage length, 6)
         ms = tf.pack([FULLfw, FULLbw, MAXfw, MAXbw, MEANfw, MEANbw], axis=2)
-        print("ms shape", ms.get_shape())
+        #print("ms shape", ms.get_shape())
         # AGGREGATION LAYER
         with tf.variable_scope("aggregation"):
             # fwA, bwA: (batch size, passage length, aggregation hidden size)
-            cell = tf.nn.rnn_cell.BasicLSTMCell(self.config.aggregation_size)
-            (fwA, bwA), _ = bidirectional_dynamic_rnn(cell, cell, ms,
+            aggcell = tf.nn.rnn_cell.BasicLSTMCell(self.config.aggregation_size)
+            aggcell = tf.nn.rnn_cell.DropoutWrapper(aggcell, input_keep_prob=self.dropout_prob,output_keep_prob=self.dropout_prob)
+            (fwA, bwA), _ = bidirectional_dynamic_rnn(aggcell, aggcell, ms,
                             self.plen_placeholder, dtype=np.float32)
 
             # (batch size, passage length, 2*aggregation hidden size)
             mergedA = tf.concat(2, [fwA, bwA])
 
         # PREDICTION LAYER
+        # uhh
+        Q1 = tf.get_variable("Q1", shape=(2*self.config.aggregation_size,1), dtype=np.float32)
+        mergedA = tf.reshape(mergedA, [-1, 2*self.config.aggregation_size])
+        preds = tf.matmul(mergedA, Q1)
+        self.a_s = tf.reshape(preds, [-1, self.paragraph_length])
+        self.y_s = tf.argmax(tf.nn.softmax(self.a_s), axis=1)
+
+        # Just different weights for the end softmax
+        Q2 = tf.get_variable("Q2", shape=(2*self.config.aggregation_size,1), dtype=np.float32)
+        mergedA2 = tf.reshape(mergedA, [-1, 2*self.config.aggregation_size])
+        preds2 = tf.matmul(mergedA2, Q2)
+        self.a_e = tf.reshape(preds2, [-1, self.paragraph_length])
+        self.y_e = tf.argmax(tf.nn.softmax(self.a_e), axis=1)
+
+        self.thing = preds
+        # No bias because softmax is invariant to constants! Woo!
+        #preds = tf.einsum('aij,j->ai', mergedA, Q)
+        #print ("preds shape",preds.get_shape())
         
 
         return
@@ -302,9 +325,9 @@ class QASystem(object):
         :return:
         """
         with vs.variable_scope("loss"):
-            #l1 = ssce(self.a_s, self.start_answer)
-            #l2 = ssce(self.a_e, self.end_answer)
-            self.loss = tf.constant(42)#l1 + l2 
+            l1 = ssce(self.a_s, self.starts_placeholder)
+            l2 = ssce(self.a_e, self.ends_placeholder)
+            self.loss = tf.reduce_mean(l1 + l2)
 
 
     def setup_embeddings(self):
@@ -317,7 +340,7 @@ class QASystem(object):
             # TODO variable
             self.embeddings = tf.constant(pretrained_embeddings)
 
-    def make_feed_dict(self, paragraphs, questions, labels):
+    def make_feed_dict(self, dropout, paragraphs, questions, labels):
         # Given a batch
         dic = {}
         def fill(L):
@@ -334,18 +357,13 @@ class QASystem(object):
         dic[self.plen_placeholder] = np.array(map(len, paragraphs))
         dic[self.qlen_placeholder] = np.array(map(len, questions))
 
-        dic[self.label_placeholder] = labels
+        dic[self.starts_placeholder] = map(lambda x: x[0], labels)
+        dic[self.ends_placeholder] = map(lambda x: x[1], labels)
+
+        dic[self.dropout_prob] = dropout
 
         return dic
 
-    def answer(self, session, test_x):
-
-        yp, yp2 = self.decode(session, test_x)
-
-        a_s = np.argmax(yp, axis=1)
-        a_e = np.argmax(yp2, axis=1)
-
-        return (a_s, a_e)
 
     def evaluate_answer(self, session, dataset, sample=100, log=False):
         """
@@ -363,23 +381,47 @@ class QASystem(object):
         :return:
         """
 
-        answer = p[a_s, a_e + 1]
+        """answer = (tf.argmax(self.y_s, axis=1)
         true_answer = p[true_s, true_e + 1]
         f1 = f1_score(answer, true_answer)
-        em = exact_match_score(answer, true_answer)
+        em = exact_match_score(answer, true_answer
 
         if log:
-            logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))
+            logging.info("F1: {}, EM: {}, for {} samples".format(f1, em, sample))"""
+        batch = minibatches(dataset, sample).next()
+        paragraphs, questions, labels = batch
+        feed = self.make_feed_dict(1.0, *batch)
+        starts, ends = session.run([self.y_s, self.y_e], feed_dict=feed)
+        predictions = zip(starts, ends)
+
+        def getstr(interval, par):
+            stuff = par[interval[0]:interval[1]:1]
+            return ' '.join(map(str, stuff))
+
+        f1 = 0.0
+        em = 0.0
+        for i in range(sample):
+            par = paragraphs[i]
+            actual = labels[i]
+            pred = predictions[i]
+            par_actual = getstr(actual, par)
+            par_pred = getstr(pred, par)
+            f1 += f1_score(par_pred, par_actual)
+            em += exact_match_score(par_pred, par_actual)
+        f1 /= float(sample)
+        em /= float(sample)
+        if log:
+            logging.info("F1: %.2f, EM: %.2f, for %dr samples"%(f1, em, sample))
+        #print("actually computing f1", batch)
+        #print(predictions)
 
         return f1, em
 
     def train_on_batch(self, session, batch):
         #print("Training on batch", batch)
-        feed = self.make_feed_dict(*batch)
-        output = session.run([self.thing], feed_dict=feed)
-        print("output is",output)
-        exit()
-        return loss
+        feed = self.make_feed_dict(1-self.config.dropout, *batch)
+        output = session.run([self.loss], feed_dict=feed)[0]
+        return output
 
     def run_epoch(self, session, dataset, val_dataset):
         prog = Progbar(target=1 + int(len(dataset) / self.config.batch_size))
@@ -388,7 +430,7 @@ class QASystem(object):
             prog.update(i+1, [("train loss", loss)])
         print("")
 
-        f1, em = self.evaluate_answer(session, val_dataset)
+        f1, em = self.evaluate_answer(session, val_dataset, log=True)
         return f1 # return validation f1
 
     def train(self, session, dataset, val_dataset, train_dir):
