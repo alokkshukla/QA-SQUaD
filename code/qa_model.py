@@ -147,7 +147,7 @@ class QASystem(object):
             op = tf.train.AdamOptimizer(learning_rate=self.config.learning_rate)
             tvars = tf.trainable_variables()
 
-            grads, _ = tf.clip_by_global_norm(tf.gradients(self.loss, tvars), 1)
+            grads, _ = tf.clip_by_global_norm(tf.gradients(self.loss, tvars), 10)
             self.grads = tf.gradients(self.loss, tvars)#,map(lambda x: x.name, tvars))#zip(grads, tvars)
             self.train_op = op.apply_gradients(zip(grads, tvars))
             #self.train_op = op.minimize(self.loss)
@@ -183,13 +183,26 @@ class QASystem(object):
 
 
         #p = tf.mul(p, rmax)
-        #p = tf.einsum('aij,ai->aij', p, rmax)
-        p = tf.select(tf.is_nan(p), tf.ones_like(p) * 0, p)
-        q = tf.select(tf.is_nan(q), tf.ones_like(q) * 0, q)
+        p = tf.einsum('aij,ai->aij', p, rmax)
+        p = tf.select(tf.is_nan(p), tf.ones_like(p) * 1, p)
+        q = tf.select(tf.is_nan(q), tf.ones_like(q) * 1, q)
 
         # CONTEXT REPRESENTATION LAYER uhhh
 
-        with tf.variable_scope("new"):
+        with tf.variable_scope("reused"):
+            #with tf.variable_scope("context"):
+            cell = tf.nn.rnn_cell.BasicLSTMCell(self.config.state_size)
+            cell = tf.nn.rnn_cell.DropoutWrapper(cell,input_keep_prob=self.dropout_prob,output_keep_prob=self.dropout_prob)
+            #with tf.variable_scope("back"):
+            #bcell = tf.nn.rnn_cell.BasicLSTMCell(self.config.state_size)
+
+            (fwQ, bwQ), _ = bidirectional_dynamic_rnn(cell, cell, q,
+                                    self.qlen_placeholder, dtype=np.float32)
+            tf.get_variable_scope().reuse_variables()
+            (fwP, bwP), _ = bidirectional_dynamic_rnn(cell, cell, p,
+                                    self.plen_placeholder, dtype=np.float32)
+
+        """with tf.variable_scope("new"):
             #with tf.variable_scope("context"):
             aa = tf.nn.rnn_cell.BasicLSTMCell(self.config.state_size)
             #with tf.variable_scope("back"):
@@ -199,16 +212,8 @@ class QASystem(object):
             print("shapes",q.get_shape(),self.qlen_placeholder.get_shape())
             print(q)
             (fwP, bwP), _ = bidirectional_dynamic_rnn(aa, aa, p,
-                                    self.plen_placeholder, dtype=np.float32)
+                                    self.plen_placeholder, dtype=np.float32)"""
 
-        with tf.variable_scope("reused"):
-            #with tf.variable_scope("context"):
-            fcell = tf.nn.rnn_cell.BasicLSTMCell(self.config.state_size)
-            #with tf.variable_scope("back"):
-            bcell = tf.nn.rnn_cell.BasicLSTMCell(self.config.state_size)
-
-            (fwQ, bwQ), _ = bidirectional_dynamic_rnn(fcell, fcell, q,
-                                    self.qlen_placeholder, dtype=np.float32)
         """with tf.variable_scope("context", reuse=True):
             # Note. We're using the same cell. Maybe not?
             #cell = tf.nn.rnn_cell.DropoutWrapper(cell,input_keep_prob=self.dropout_prob,output_keep_prob=self.dropout_prob)
@@ -227,14 +232,14 @@ class QASystem(object):
         xavier = tf.contrib.layers.xavier_initializer()
 
         # Let's do naive cosine instead
-        fwQnorm = tf.truediv(fwQ, l2_norm(fwQ, [2]))
-        bwQnorm = tf.truediv(bwQ, l2_norm(bwQ, [2]))
+        fwQnorm = tf.truediv(fwQ, 1e-7+l2_norm(fwQ, [2]))
+        bwQnorm = tf.truediv(bwQ, 1e-7+l2_norm(bwQ, [2]))
 
-        fwPnorm = tf.truediv(fwP, l2_norm(fwP, [2]))
-        bwPnorm = tf.truediv(bwP, l2_norm(bwP, [2]))
+        fwPnorm = tf.truediv(fwP, 1e-7+l2_norm(fwP, [2]))
+        bwPnorm = tf.truediv(bwP, 1e-7+l2_norm(bwP, [2]))
 
-        fwPnorm = tf.select(tf.is_nan(fwPnorm), tf.ones_like(fwPnorm) * 0, fwPnorm)
-        bwPnorm = tf.select(tf.is_nan(bwPnorm), tf.ones_like(bwPnorm) * 0, bwPnorm)
+        #fwPnorm = tf.select(tf.is_nan(fwPnorm), tf.ones_like(fwPnorm) * 0, fwPnorm)
+        #bwPnorm = tf.select(tf.is_nan(bwPnorm), tf.ones_like(bwPnorm) * 0, bwPnorm)
 
         # (batch size, question length, paragraph length)
         fwSim = tf.einsum('aij,akj->aik', fwQnorm, fwPnorm)
@@ -287,11 +292,11 @@ class QASystem(object):
         ms = tf.pack([FULLfw, FULLbw, MAXfw, MAXbw, MEANfw, MEANbw], axis=2)
         #print("ms shape", ms.get_shape())
         # AGGREGATION LAYER
-        self.thing = self.plen_placeholder
+        self.thing = p
         with tf.variable_scope("aggregation"):
             # fwA, bwA: (batch size, passage length, aggregation hidden size)
             aggcell = tf.nn.rnn_cell.BasicLSTMCell(self.config.aggregation_size)
-            #aggcell = tf.nn.rnn_cell.DropoutWrapper(aggcell, input_keep_prob=self.dropout_prob,output_keep_prob=self.dropout_prob)
+            aggcell = tf.nn.rnn_cell.DropoutWrapper(aggcell, input_keep_prob=self.dropout_prob,output_keep_prob=self.dropout_prob)
             (fwA, bwA), _ = bidirectional_dynamic_rnn(aggcell, aggcell, ms,
                             self.plen_placeholder, dtype=np.float32)
 
@@ -429,7 +434,7 @@ class QASystem(object):
         predictions = zip(starts, ends)
 
         def getstr(interval, par):
-            stuff = par[interval[0]:interval[1]:1]
+            stuff = par[interval[0]:interval[1]+1]
             return ' '.join(map(str, stuff))
 
         f1 = 0.0
@@ -440,12 +445,12 @@ class QASystem(object):
             pred = predictions[i]
             par_actual = getstr(actual, par)
             par_pred = getstr(pred, par)
-            f1 += f1_score(par_pred, par_actual)
-            em += exact_match_score(par_pred, par_actual)
+            f1 += 100*f1_score(par_pred, par_actual)
+            em += 100*exact_match_score(par_pred, par_actual)
         f1 /= float(sample)
         em /= float(sample)
         if log:
-            logging.info("F1: %.2f, EM: %.2f, for %dr samples"%(f1, em, sample))
+            logging.info("F1: %.2f, EM: %.2f, for %d samples"%(f1, em, sample))
         #print("actually computing f1", batch)
         #print(predictions)
 
@@ -455,12 +460,14 @@ class QASystem(object):
         #print("Training on batch", batch)
         feed = self.make_feed_dict(1-self.config.dropout, *batch)
         _, loss, thing, grads = session.run([self.train_op, self.loss, self.thing, self.grads], feed_dict=feed)
-        trainable = tf.trainable_variables()
+        _, loss = session.run([self.train_op, self.loss], feed_dict=feed)
+        """trainable = tf.trainable_variables()
         for var, grad in zip(trainable, grads):
             print(var.name, grad)
         #print("loss is", loss)
+        #np.set_printoptions(threshold=np.inf)
         print("thing is", thing)
-        #print("grads are", grads)
+        #print("grads are", grads)"""
         return loss
 
     def run_epoch(self, session, dataset, val_dataset):
@@ -468,9 +475,11 @@ class QASystem(object):
         for i, batch in enumerate(minibatches(dataset, self.config.batch_size)):
             loss = self.train_on_batch(session, batch)
             prog.update(i+1, [("train loss", loss)])
+            if (i+1) % 200 == 0:
+                self.evaluate_answer(session, val_dataset, sample=800, log=True)
         print("")
 
-        f1, em = self.evaluate_answer(session, val_dataset, log=True)
+        f1, em = self.evaluate_answer(session, val_dataset, sample=2000, log=True)
         return f1 # return validation f1
 
     def train(self, session, dataset, val_dataset, train_dir):

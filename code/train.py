@@ -14,7 +14,7 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-tf.app.flags.DEFINE_float("learning_rate", 0., "Learning rate.")
+tf.app.flags.DEFINE_float("learning_rate", 0.01, "Learning rate.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 10.0, "Clip gradients to this norm.")
 tf.app.flags.DEFINE_float("dropout", 0.2, "Fraction of units randomly dropped on non-recurrent connections.")
 tf.app.flags.DEFINE_integer("batch_size", 10, "Batch size to use during training.")
@@ -106,6 +106,7 @@ def main(_):
     
     dataset = load_dataset("train")
     val_dataset = load_dataset("val")
+    print("dataset sizes", len(dataset), "val", len(val_dataset))
 
     embed_path = FLAGS.embed_path or pjoin("data", "squad", "glove.trimmed.{}.npz".format(FLAGS.embedding_size))
     vocab_path = FLAGS.vocab_path or pjoin(FLAGS.data_dir, "vocab.dat")
