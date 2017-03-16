@@ -210,29 +210,56 @@ class QASystem(object):
         # This seems to be the idea behind pooling but tf is being weird
 
         # Matching full similarity
-        FULLfw = fwSim[:,self.question_length - 1, :]
-        FULLbw = bwSim[:,0, :]
-        self.thing = tf.gather_nd(fwSim, [-1,self.qlen_placeholder,-1])
+
+        def get_last(a):
+            mat = a[0]
+            ln = a[1]
+            return mat[ln-1, :]
+
+        def get_first(a):
+            mat = a[0]
+            ln = a[1]
+            return mat[0, :]
+
+        def get_max(a):
+            ln = a[1]
+            mat = a[0][:ln, :]
+            return tf.reduce_max(mat, 0)
+
+        def get_mean(a):
+            ln = a[1]
+            mat = a[0][:ln, :]
+            return tf.reduce_mean(mat, 0)
+
+        FULLfw = tf.map_fn(get_last, (fwSim, self.qlen_placeholder), dtype=np.float32)
+        FULLbw = tf.map_fn(get_first, (bwSim, self.qlen_placeholder), dtype=np.float32)
+
+        self.thing = FULLfw
         #fwSim[0, self.qlen_placeholder[0]-1, self.plen_placeholder[0]-1]
         #fwSim[:, tf.expand_dims(self.qlen_placeholder,1)-1, :]
 
 
-        MAXfw = tf.reduce_max(fwSim, reduction_indices=[1])
-        MAXbw = tf.reduce_max(bwSim, reduction_indices=[1])
+        MAXfw = tf.map_fn(get_max, (fwSim, self.qlen_placeholder), dtype=np.float32)
+        MAXbw = tf.map_fn(get_max, (bwSim, self.qlen_placeholder), dtype=np.float32)
 
-        MEANfw = tf.reduce_mean(fwSim, reduction_indices=[1])
-        MEANbw = tf.reduce_mean(bwSim, reduction_indices=[1])
+        MEANfw = tf.map_fn(get_mean, (fwSim, self.qlen_placeholder), dtype=np.float32)
+        MEANbw = tf.map_fn(get_mean, (bwSim, self.qlen_placeholder), dtype=np.float32)
 
         # (batch size, passage length, 6)
         ms = tf.pack([FULLfw, FULLbw, MAXfw, MAXbw, MEANfw, MEANbw], axis=2)
-
+        print("ms shape", ms.get_shape())
         # AGGREGATION LAYER
         with tf.variable_scope("aggregation"):
-            # (batch size, passage length, aggregation hidden size)
+            # fwA, bwA: (batch size, passage length, aggregation hidden size)
             cell = tf.nn.rnn_cell.BasicLSTMCell(self.config.aggregation_size)
             (fwA, bwA), _ = bidirectional_dynamic_rnn(cell, cell, ms,
                             self.plen_placeholder, dtype=np.float32)
-            print("fwA shape",fwA.get_shape())
+
+            # (batch size, passage length, 2*aggregation hidden size)
+            mergedA = tf.concat(2, [fwA, bwA])
+
+        # PREDICTION LAYER
+        
 
         return
         """
