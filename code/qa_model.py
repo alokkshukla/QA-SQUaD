@@ -11,6 +11,7 @@ from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 from tensorflow.python.ops import variable_scope as vs
 from tensorflow.python.ops.nn import bidirectional_dynamic_rnn
+from tensorflow.python.client import timeline
 #import tf.nn.rnn_cell
 
 #from tensorflow.nn import sparse_softmax_cross_entropy_with_logits as ssce 
@@ -132,8 +133,14 @@ class QASystem(object):
         self.starts_placeholder = tf.placeholder(tf.int64, shape=(None))
         self.ends_placeholder = tf.placeholder(tf.int64, shape=(None))
 
-        self.qlen_placeholder = tf.placeholder(tf.int32, shape=(None))
-        self.plen_placeholder = tf.placeholder(tf.int32, shape=(None))
+        self.qlen_placeholder = tf.placeholder(tf.int32, shape=(None), name="qlenpl")
+        self.plen_placeholder = tf.placeholder(tf.int32, shape=(None), name="plenpl")
+
+        # Copy them onto the GPU
+        """with tf.Graph().as_default():
+          with tf.device("/gpu:0"):
+            self.qlen_placeholder = tf.Variable(self.qlen_placeholder, trainable=False, collections=[], name="qlens")
+            self.plen_placeholder = tf.Variable(self.plen_placeholder, trainable=False, collections=[], name="plens")"""
 
         self.dropout_prob = tf.placeholder(tf.float32, shape=())
 
@@ -147,10 +154,10 @@ class QASystem(object):
             op = tf.train.AdamOptimizer(learning_rate=self.config.learning_rate)
             tvars = tf.trainable_variables()
 
-            grads, _ = tf.clip_by_global_norm(tf.gradients(self.loss, tvars), 10)
+            grads, _ = tf.clip_by_global_norm(tf.gradients(self.loss, tvars, aggregation_method=1, colocate_gradients_with_ops=False), 10)
             self.grads = tf.gradients(self.loss, tvars)#,map(lambda x: x.name, tvars))#zip(grads, tvars)
             self.train_op = op.apply_gradients(zip(grads, tvars))
-            #self.train_op = op.minimize(self.loss)
+            self.train_op = op.minimize(self.loss)
 
         # ==== set up training/updating procedure ====
         pass
@@ -274,17 +281,25 @@ class QASystem(object):
             mat = a[0][:ln, :]
             return tf.reduce_mean(mat, 0)
 
-        FULLfw = tf.map_fn(get_last, (fwSim, self.qlen_placeholder), dtype=np.float32)
-        FULLbw = tf.map_fn(get_first, (bwSim, self.qlen_placeholder), dtype=np.float32)
+        FULLfw = tf.map_fn(get_last, (fwSim, self.qlen_placeholder), dtype=np.float32, name="lmao")
+        FULLbw = tf.map_fn(get_first, (bwSim, self.qlen_placeholder), dtype=np.float32, name="ayyy") 
+        #FULLfw = tf.map_fn(get_last, tf.tuple([fwSim, self.qlen_placeholder], name="tupleayy"), dtype=np.float32, swap_memory=False, name="lmaoo")
+        #ones = tf.ones(shape=(self.config.batch_size), dtype=np.int32, name="ones")
+        #FULLfw = tf.map_fn(get_last, fwSim, dtype=np.float32, name="lmao")
+        #FULLbw = tf.map_fn(get_first, bwSim, dtype=np.float32, name="test")
 
         #self.thing = FULLfw
         #fwSim[0, self.qlen_placeholder[0]-1, self.plen_placeholder[0]-1]
         #fwSim[:, tf.expand_dims(self.qlen_placeholder,1)-1, :]
 
+        #MAXfw = tf.map_fn(get_max, (fwSim), dtype=np.float32, name="maxx")
+        #MAXbw = tf.map_fn(get_max, (bwSim), dtype=np.float32)
 
         MAXfw = tf.map_fn(get_max, (fwSim, self.qlen_placeholder), dtype=np.float32)
         MAXbw = tf.map_fn(get_max, (bwSim, self.qlen_placeholder), dtype=np.float32)
 
+        #MEANfw = tf.map_fn(get_mean, (fwSim), dtype=np.float32)
+        #MEANbw = tf.map_fn(get_mean, (bwSim), dtype=np.float32)
         MEANfw = tf.map_fn(get_mean, (fwSim, self.qlen_placeholder), dtype=np.float32)
         MEANbw = tf.map_fn(get_mean, (bwSim, self.qlen_placeholder), dtype=np.float32)
 
@@ -378,6 +393,7 @@ class QASystem(object):
             pretrained_embeddings = np.load(self.embed_path)['glove'].astype(np.float32)
             # TODO variable
             self.embeddings = tf.constant(pretrained_embeddings)
+            print("embeddings",pretrained_embeddings.shape)
 
     def make_feed_dict(self, dropout, paragraphs, questions, labels):
         # Given a batch
@@ -459,9 +475,18 @@ class QASystem(object):
     def train_on_batch(self, session, batch):
         #print("Training on batch", batch)
         feed = self.make_feed_dict(1-self.config.dropout, *batch)
-        _, loss, thing, grads = session.run([self.train_op, self.loss, self.thing, self.grads], feed_dict=feed)
-        _, loss = session.run([self.train_op, self.loss], feed_dict=feed)
+        #_, loss, thing, grads = session.run([self.train_op, self.loss, self.thing, self.grads], feed_dict=feed)
+        #run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+        #run_metadata = tf.RunMetadata()
+        _, loss = session.run([self.train_op, self.loss], feed_dict=feed) #,options=run_options, run_metadata=run_metadata)
+        """print("SESSION_RAN")
+        tl = timeline.Timeline(run_metadata.step_stats)
+        ctf = tl.generate_chrome_trace_format()
+        with open('timeline.json', 'w') as f:
+            f.write(ctf)
+            print("wrote timeline")"""
         """trainable = tf.trainable_variables()
+
         for var, grad in zip(trainable, grads):
             print(var.name, grad)
         #print("loss is", loss)
@@ -475,7 +500,7 @@ class QASystem(object):
         for i, batch in enumerate(minibatches(dataset, self.config.batch_size)):
             loss = self.train_on_batch(session, batch)
             prog.update(i+1, [("train loss", loss)])
-            if (i+1) % 200 == 0:
+            if (i+1) % 2 == 0:
                 self.evaluate_answer(session, val_dataset, sample=800, log=True)
         print("")
 
